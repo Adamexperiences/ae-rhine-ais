@@ -34,10 +34,10 @@ jobs:
           const WebSocket = require('ws');
           const API_KEY = process.env.AISSTREAM_KEY;
           if (!API_KEY) { console.error('Set AISSTREAM_KEY'); process.exit(1); }
-          const RHINE_BOX = [[47.45, 4.30], [52.40, 8.80]];
+          const RHINE_BOX = [[-90, -180], [90, 180]];
           const isPassenger = (t) => typeof t === 'number' && t >= 60 && t <= 69;
           const CRUISE_MMSI = new Set([]);
-          const LISTEN_MS = 60 * 1000;
+          const LISTEN_MS = 30 * 1000;
           const KNOTS_TO_KMH = 1.852;
           const positions = new Map();
           const statics = new Map();
