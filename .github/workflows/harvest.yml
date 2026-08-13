@@ -34,17 +34,22 @@ jobs:
           const WebSocket = require('ws');
           const API_KEY = process.env.AISSTREAM_KEY;
           if (!API_KEY) { console.error('Set AISSTREAM_KEY'); process.exit(1); }
-          const RHINE_BOX = [[-90, -180], [90, 180]];
+          const BOXES = [ [[47.45, 4.30], [52.40, 8.80]], [[43.00, 12.50], [49.30, 30.00]] ];
+          function riverOf(lat, lng) {
+            if (lng >= 11.5) return 'danube';
+            if (lat >= 49.30 && lat <= 50.45 && lng >= 6.00 && lng < 7.45) return 'moselle';
+            return 'rhine';
+          }
           const isPassenger = (t) => typeof t === 'number' && t >= 60 && t <= 69;
           const CRUISE_MMSI = new Set([]);
-          const LISTEN_MS = 30 * 1000;
+          const LISTEN_MS = 3 * 60 * 1000;
           const KNOTS_TO_KMH = 1.852;
           const positions = new Map();
           const statics = new Map();
           let msgCount = 0;
           const ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
           ws.on('open', () => {
-            ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: [RHINE_BOX], FilterMessageTypes: ['PositionReport','ShipStaticData'] }));
+            ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: BOXES, FilterMessageTypes: ['PositionReport','ShipStaticData'] }));
             console.log('connected, listening', LISTEN_MS/1000, 's');
             setTimeout(finish, LISTEN_MS);
           });
@@ -83,10 +88,10 @@ jobs:
               typeCounts[t] = (typeCounts[t]||0)+1;
               const keep = CRUISE_MMSI.size ? CRUISE_MMSI.has(mmsi) : isPassenger(t);
               if (!keep) continue;
-              out.push({ mmsi, name: st.name || ('MMSI '+mmsi), lat: +pos.lat.toFixed(5), lng: +pos.lng.toFixed(5), spd: pos.spd, hdg: pos.hdg, status: pos.status, seen: Math.round((now-pos.ts)/1000) });
+              out.push({ mmsi, name: st.name || ('MMSI '+mmsi), river: riverOf(pos.lat, pos.lng), lat: +pos.lat.toFixed(5), lng: +pos.lng.toFixed(5), spd: pos.spd, hdg: pos.hdg, status: pos.status, seen: Math.round((now-pos.ts)/1000) });
             }
             out.sort((a,b) => a.name.localeCompare(b.name));
-            const feed = { updated: new Date().toISOString(), river: 'rhine', count: out.length, ships: out };
+            const feed = { updated: new Date().toISOString(), rivers: ['rhine','moselle','danube'], count: out.length, ships: out };
             fs.writeFileSync(process.env.OUT || 'ships.json', JSON.stringify(feed, null, 2));
             console.log('DIAG messages=' + msgCount + ' positions=' + positions.size + ' statics=' + statics.size);
             console.log('DIAG shipTypeCounts=' + JSON.stringify(typeCounts));
