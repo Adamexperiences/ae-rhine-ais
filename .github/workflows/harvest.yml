@@ -37,10 +37,11 @@ jobs:
           const RHINE_BOX = [[47.45, 4.30], [52.40, 8.80]];
           const isPassenger = (t) => typeof t === 'number' && t >= 60 && t <= 69;
           const CRUISE_MMSI = new Set([]);
-          const LISTEN_MS = 10 * 60 * 1000;
+          const LISTEN_MS = 60 * 1000;
           const KNOTS_TO_KMH = 1.852;
           const positions = new Map();
           const statics = new Map();
+          let msgCount = 0;
           const ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
           ws.on('open', () => {
             ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: [RHINE_BOX], FilterMessageTypes: ['PositionReport','ShipStaticData'] }));
@@ -48,6 +49,8 @@ jobs:
             setTimeout(finish, LISTEN_MS);
           });
           ws.on('message', (raw) => {
+            msgCount++;
+            if (msgCount <= 3) console.log('RAW' + msgCount + '=' + String(raw).slice(0, 300));
             let m; try { m = JSON.parse(raw); } catch { return; }
             const meta = m.MetaData || {};
             const mmsi = meta.MMSI || meta.MMSI_String;
@@ -68,6 +71,7 @@ jobs:
             }
           });
           ws.on('error', (e) => console.error('ws error', e.message));
+          ws.on('close', (code, reason) => console.log('CLOSE code=' + code + ' reason=' + String(reason)));
           function finish() {
             try { ws.close(); } catch {}
             const now = Date.now();
@@ -84,7 +88,7 @@ jobs:
             out.sort((a,b) => a.name.localeCompare(b.name));
             const feed = { updated: new Date().toISOString(), river: 'rhine', count: out.length, ships: out };
             fs.writeFileSync(process.env.OUT || 'ships.json', JSON.stringify(feed, null, 2));
-            console.log('DIAG positions=' + positions.size + ' statics=' + statics.size);
+            console.log('DIAG messages=' + msgCount + ' positions=' + positions.size + ' statics=' + statics.size);
             console.log('DIAG shipTypeCounts=' + JSON.stringify(typeCounts));
             const passengerNames = [];
             for (const [mmsi, st] of statics) { if (isPassenger(st.type) && passengerNames.length < 20) passengerNames.push(st.name || mmsi); }
