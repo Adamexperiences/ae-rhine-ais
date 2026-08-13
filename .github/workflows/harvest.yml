@@ -1,0 +1,103 @@
+name: Rhine AIS harvest
+
+on:
+  schedule:
+    - cron: '5 * * * *'   # every hour at :05
+  workflow_dispatch:        # run manually from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install ws
+        run: npm init -y >/dev/null 2>&1 && npm install ws >/dev/null 2>&1
+      - name: Capture Rhine snapshot
+        env:
+          AISSTREAM_KEY: ${{ secrets.AISSTREAM_KEY }}
+          OUT: _site/ships.json
+        run: |
+          mkdir -p _site
+          cat > harvester.js <<'EOF'
+          const fs = require('fs');
+          const WebSocket = require('ws');
+          const API_KEY = process.env.AISSTREAM_KEY;
+          if (!API_KEY) { console.error('Set AISSTREAM_KEY'); process.exit(1); }
+          const RHINE_BOX = [[47.45, 4.30], [52.40, 8.80]];
+          const isPassenger = (t) => typeof t === 'number' && t >= 60 && t <= 69;
+          const CRUISE_MMSI = new Set([]);
+          const LISTEN_MS = 90 * 1000;
+          const KNOTS_TO_KMH = 1.852;
+          const positions = new Map();
+          const statics = new Map();
+          const ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
+          ws.on('open', () => {
+            ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: [RHINE_BOX], FilterMessageTypes: ['PositionReport','ShipStaticData'] }));
+            console.log('connected, listening', LISTEN_MS/1000, 's');
+            setTimeout(finish, LISTEN_MS);
+          });
+          ws.on('message', (raw) => {
+            let m; try { m = JSON.parse(raw); } catch { return; }
+            const meta = m.MetaData || {};
+            const mmsi = meta.MMSI || meta.MMSI_String;
+            if (!mmsi) return;
+            if (m.MessageType === 'PositionReport') {
+              const p = m.Message.PositionReport;
+              const sog = typeof p.Sog === 'number' ? p.Sog : 0;
+              positions.set(String(mmsi), {
+                lat: p.Latitude, lng: p.Longitude,
+                spd: +(sog * KNOTS_TO_KMH).toFixed(1),
+                hdg: (typeof p.TrueHeading === 'number' && p.TrueHeading < 511) ? p.TrueHeading : (typeof p.Cog === 'number' ? Math.round(p.Cog) : 0),
+                status: (sog > 0.5 || p.NavigationalStatus === 0) ? 'moving' : 'moored',
+                ts: Date.now()
+              });
+            } else if (m.MessageType === 'ShipStaticData') {
+              const s = m.Message.ShipStaticData;
+              statics.set(String(mmsi), { name: (s.Name||'').trim() || (meta.ShipName||'').trim(), type: s.Type });
+            }
+          });
+          ws.on('error', (e) => console.error('ws error', e.message));
+          function finish() {
+            try { ws.close(); } catch {}
+            const now = Date.now();
+            const out = [];
+            for (const [mmsi, pos] of positions) {
+              const st = statics.get(mmsi) || {};
+              const keep = CRUISE_MMSI.size ? CRUISE_MMSI.has(mmsi) : isPassenger(st.type);
+              if (!keep) continue;
+              out.push({ mmsi, name: st.name || ('MMSI '+mmsi), lat: +pos.lat.toFixed(5), lng: +pos.lng.toFixed(5), spd: pos.spd, hdg: pos.hdg, status: pos.status, seen: Math.round((now-pos.ts)/1000) });
+            }
+            out.sort((a,b) => a.name.localeCompare(b.name));
+            const feed = { updated: new Date().toISOString(), river: 'rhine', count: out.length, ships: out };
+            fs.writeFileSync(process.env.OUT || 'ships.json', JSON.stringify(feed, null, 2));
+            console.log('wrote', out.length, 'passenger vessels');
+            process.exit(0);
+          }
+          EOF
+          node harvester.js
+          echo '--- ships.json (first 400 chars) ---'
+          head -c 400 _site/ships.json; echo
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: harvest
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
