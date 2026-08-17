@@ -79,7 +79,7 @@ jobs:
           const LISTEN_MS = 6 * 60 * 1000;   // 6 min = 2 full moored broadcast cycles
           const PREV_URL  = "https://adamexperiences.github.io/ae-rhine-ais/ships.json";
           const CARRY_MOORED_MIN = 720;      // 12h: covers an overnight mooring
-          const CARRY_MOVING_MIN = 45;       // a moving ship goes stale fast
+          const CARRY_MOVING_MIN = 720;       // 12h, same as moored. Age is exposed as ageMin for the page to caption.
           const KNOTS_TO_KMH = 1.852;
 
           const positions = new Map();
