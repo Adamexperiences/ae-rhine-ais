@@ -1,0 +1,242 @@
+name: Rhine AIS harvest B
+
+on:
+  schedule:
+    # Second workflow file, offset from harvest.yml. GitHub drops most scheduled
+    # slots; this tests whether the throttle is per workflow or per repository.
+    - cron: '25,55 * * * *'
+  workflow_dispatch:      # run manually from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  harvest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install ws
+        run: npm init -y >/dev/null 2>&1 && npm install ws >/dev/null 2>&1
+      - name: Capture Rhine snapshot
+        env:
+          AISSTREAM_KEY: ${{ secrets.AISSTREAM_KEY }}
+          OUT: _site/ships.json
+        run: |
+          mkdir -p _site
+          cat > harvester.js <<'HARVESTER_EOF'
+          const fs = require("fs");
+          const WebSocket = require("ws");
+          const API_KEY = process.env.AISSTREAM_KEY;
+          if (!API_KEY) { console.error("Set AISSTREAM_KEY"); process.exit(1); }
+
+          /* ---------------------------------------------------------------
+           * COVERAGE BOXES  [[latMin,lngMin],[latMax,lngMax]]
+           * 1) Rhine + delta + Moselle + Main + Main-Danube canal.
+           *    East edge is 11.60 (was 8.80), closing the dead zone that used
+           *    to swallow every ship on the Main: Wuerzburg 9.93E, Bamberg
+           *    10.89E, Nuremberg 11.08E.
+           * 2) Danube. West edge 11.50 (was 12.50) so Kelheim and Regensburg
+           *    (12.10E) are inside. Ships docking in Amsterdam alternate
+           *    between the two rivers, so both are tracked.
+           * --------------------------------------------------------------- */
+          const BOXES = [
+            [[47.45,  4.30], [52.40, 11.60]],
+            [[43.00, 11.50], [49.30, 30.00]]
+          ];
+
+          // Explicit box test. Used to reject carried-forward ships that fall outside
+          // the Rhine box - without it, an old Danube position would be resurrected
+          // from the previous feed every run and mislabelled "rhine" by the fallthrough.
+          function inBox(lat, lng) {
+            return BOXES.some(function (b) {
+              return lat >= b[0][0] && lat <= b[1][0] && lng >= b[0][1] && lng <= b[1][1];
+            });
+          }
+
+          function riverOf(lat, lng) {
+            // Danube proper is south of 49.3N. The Main-Danube canal north of
+            // that stays "rhine" because those ships are on Rhine itineraries.
+            if (lng >= 11.50 && lat <= 49.30) return "danube";
+            // Moselle: Trier up to just short of the Koblenz confluence.
+            // Stops at 7.20E on purpose so the Rhine at Andernach (7.40E) and
+            // Koblenz (7.60E) is not mislabelled. Under-claims a few km rather
+            // than stealing Rhine ships.
+            if (lat >= 49.45 && lat <= 50.40 && lng >= 6.00 && lng <= 7.20) return "moselle";
+            return "rhine";
+          }
+
+          const FLEET = {"211115500":"Amadeus Queen|Amadeus River Cruises","211158980":"TUI Aria|TUI River Cruises","211204790":"SS Antoinette|Uniworld","211216820":"Amadeus Star|Amadeus River Cruises","211229340":"Amadeus Aurea|Amadeus River Cruises","211235260":"Viking Annar|Viking River Cruises","211237210":"Viking Dagur|Viking River Cruises","211268940":"Viking Rota|Viking River Cruises","211299340":"Amadeus Imperial|Amadeus River Cruises","211347500":"Aurelia|Phoenix Reisen","211457570":"Arosa Alea|A-Rosa River Cruises","211505850":"Esprit|","211507510":"Monarch Duchess|Gate 1 Travel","211513900":"De Amsterdam|Feenstra Rijn Lijn","211534170":"Amadeus Brilliant|Amadeus River Cruises","211567840":"Alena|Phoenix Reisen","211599600":"Swiss Splendor|Swiss Excellence River Cruises","211605060":"Avalon Expression|Avalon Waterways","211643260":"Serrahn Queen|nicko cruises","211682910":"MS Mona Lisa|CroisiEurope","211718140":"Rhein Melodie|nicko cruises","211797130":"Sarah|","211867530":"Amadeus Cara|Amadeus River Cruises","218006380":"Amadeus Riva|Amadeus River Cruises","226001150":"Lafayette|CroisiEurope","226001160":"MS Douce France|CroisiEurope","226005060":"MS Gerard Schmitter|CroisiEurope","227425450":"MS Beethoven|CroisiEurope","227720520":"MS L'Europe|CroisiEurope","227734020":"Victor Hugo|CroisiEurope","227890520":"MS France|CroisiEurope","229065000":"Scenic Crystal|Scenic","229379000":"Scenic Jewel|Scenic","229768000":"Emerald Sky|Emerald Cruises","229781000":"Scenic Jade|Scenic","229784000":"Scenic Gem|Scenic","229818000":"Emerald Star|Emerald Cruises","232012708":"MS La Boheme|CroisiEurope","232015731":"MS Joy|","232020310":"Inspire|Viva Cruises","232022553":"Salvinia|","235027298":"MS Monet|CroisiEurope","235079585":"Grace|","236112890":"Vita Nova|","244000706":"The Nobleman|","244005080":"Horizon|","244010311":"Magnifique II|CroisiEurope","244010349":"Trafalgar Verity|","244022420":"Edelweiss|Thurgau Travel","244023806":"Symphonie|CroisiEurope","244070799":"Avanti|","244130285":"Amicitia|Riviera Travel","244130599":"S.S. Elisabeth|Uniworld","244140915":"Holland|","244150672":"Magnifique III|CroisiEurope","244170837":"Serenade 2|","244180651":"SS Beatrice|Uniworld","244183027":"Johannes Brahms|Plantours Kreuzfahrten","244183511":"Dutch Melody|","244250601":"Johann Strauss|","244394546":"Dutch Grace|","244559805":"Arielle Royal|","244615753":"De Holland|Feenstra Rijn Lijn","244630110":"Olympia|","244630436":"Rembrandt Van Rijn|","244650446":"Magnifique X|CroisiEurope","244650986":"De Zonnebloem|","244670018":"De Willemstad|Feenstra Rijn Lijn","244670201":"Magnifique I|CroisiEurope","244670319":"De Nassau|Feenstra Rijn Lijn","244700153":"Felicitas|","244700221":"Magnifique IV|CroisiEurope","244700226":"Fluvius|","244727296":"SS Victoria|Uniworld","246342000":"Elegant|","247124610":"MS Leonardo da Vinci|CroisiEurope","248032000":"Emerald Liberte|Emerald Cruises","248063000":"Emerald Destiny|Emerald Cruises","248237000":"Scenic Ruby|Scenic","248684000":"TUI Skyla|TUI River Cruises","248880000":"Scenic Pearl|Scenic","249288000":"Scenic Amber|Scenic","253242508":"MS Modigliani|CroisiEurope","254234000":"Oscar Wilde|Riviera Travel","255803840":"Emerald Luna|Emerald Cruises","256306000":"Scenic Jasper|Scenic","256403000":"Emerald Dawn|Emerald Cruises","256404000":"Emerald Sun|Emerald Cruises","256405000":"Scenic Opal|Scenic","265614600":"Amina|Phoenix Reisen","265717400":"Albertina|","265741220":"Alisa|Phoenix Reisen","267132426":"Emerald Astra|Emerald Cruises","269057026":"Asara|Phoenix Reisen","269057048":"Rhein Symphonie|nicko cruises","269057077":"APT Ostara|APT","269057078":"APT Solara|APT","269057079":"Excellence Crown|Excellence","269057099":"Vistanova|1AVista Reisen","269057127":"The Gentleman|","269057135":"AmaSofia|AmaWaterways","269057136":"Thurgau Saxonia|Thurgau Travel","269057164":"Transcend Connect|","269057165":"Viking Eldir|Viking River Cruises","269057168":"River Duchess|Riviera Travel","269057190":"Swiss Pearl|Swiss Excellence River Cruises","269057195":"Excellence Pearl|Excellence","269057200":"Century Star|","269057202":"Travelmarvel Rigel|Travelmarvel","269057231":"Viva Tiara|Viva Cruises","269057282":"KD Moment|","269057365":"Excellence Queen|Excellence","269057367":"Alina|Phoenix Reisen","269057371":"Avalon Panorama|Avalon Waterways","269057377":"Treasures|","269057381":"Avalon Vista|Avalon Waterways","269057388":"Viking Idun|Viking River Cruises","269057390":"Viking Freya|Viking River Cruises","269057394":"Amacerto|AmaWaterways","269057411":"Antonio Bellucci|Riviera Travel","269057413":"Amaprima|AmaWaterways","269057415":"Viking Bragi|Viking River Cruises","269057448":"Viking Baldur|Viking River Cruises","269057449":"Viking Magni|Viking River Cruises","269057452":"Avalon Poetry II|Avalon Waterways","269057453":"Avalon Illumination|Avalon Waterways","269057454":"Avalon Impression|Avalon Waterways","269057460":"Viking Buri|Viking River Cruises","269057461":"Viking Heimdal|Viking River Cruises","269057462":"Viking Delling|Viking River Cruises","269057464":"Viking Lif|Viking River Cruises","269057466":"Viking Eistla|Viking River Cruises","269057467":"Viking Bestla|Viking River Cruises","269057468":"Viking Alsvin|Viking River Cruises","269057469":"Viking Idi|Viking River Cruises","269057476":"Viking Kvasir|Viking River Cruises","269057477":"Viking Kara|Viking River Cruises","269057478":"Viking Hlin|Viking River Cruises","269057489":"Viking Mani|Viking River Cruises","269057494":"Viking Eir|Viking River Cruises","269057497":"Viking Vidar|Viking River Cruises","269057498":"Viking Skirnir|Viking River Cruises","269057499":"Viking Modi|Viking River Cruises","269057506":"Avalon Tranquility II|Avalon Waterways","269057515":"Amavenita|AmaWaterways","269057516":"Viking Gefjon|Viking River Cruises","269057517":"Viking Ve|Viking River Cruises","269057518":"Viking Mimir|Viking River Cruises","269057519":"Viking Vili|Viking River Cruises","269057524":"Amaserena|AmaWaterways","269057529":"Anesha|Phoenix Reisen","269057535":"Avalon Imagery II|Avalon Waterways","269057540":"Avalon Passion|Avalon Waterways","269057543":"Amastella|AmaWaterways","269057548":"Viking Rolf|Viking River Cruises","269057549":"Viking Tialfi|Viking River Cruises","269057550":"Viking Alruna|Viking River Cruises","269057555":"Amaviola|AmaWaterways","269057571":"Viva Inspire|Viva Cruises","269057584":"MS Emily Bronte|Riviera Travel","269057586":"Viking Hild|Viking River Cruises","269057587":"Viking Herja|Viking River Cruises","269057615":"Charles Dickens|Riviera Travel","269057618":"Monarch Princess|Gate 1 Travel","269057631":"Amalea|AmaWaterways","269057632":"Rhein Prinzessin|nicko cruises","269057639":"River Crown|Noble Caledonia","269057660":"Avalon Envision|Avalon Waterways","269057662":"George Eliot|Riviera Travel","269057686":"Viking Sigrun|Viking River Cruises","269057687":"Viking Einar|Viking River Cruises","269057688":"Excellence Countess|Excellence","269057690":"Viking Tir|Viking River Cruises","269057691":"Viking Vali|Viking River Cruises","269057695":"Viking Sigyn|Viking River Cruises","269057711":"Avalon View|Avalon Waterways","269057719":"Lady Diletta|Riviera Travel","269057722":"Viking Gersemi|Viking River Cruises","269057727":"Amasiena|AmaWaterways","269057741":"Annika|Phoenix Reisen","269057748":"Monarch Queen|Gate 1 Travel","269057749":"Nicko Spirit|nicko cruises","269057750":"Spirit of the Rhine|Saga River Cruises","269057755":"Amalucia|AmaWaterways","269057758":"Travelmarvel Polaris|Travelmarvel","269057759":"Travelmarvel Vega|Travelmarvel","269057765":"Viking Gymir|Viking River Cruises","269057766":"Viking Egdir|Viking River Cruises","269057780":"Travelmarvel Capella|Travelmarvel","269057799":"Viva One|Viva Cruises","269057813":"Arosa Sena|A-Rosa River Cruises","269057824":"Monarch Baroness|Gate 1 Travel","269057854":"Thurgau Gold|Thurgau Travel","269057864":"Riverside Debussy|Riverside Luxury Cruises","269087721":"Viking Hervor|Viking River Cruises","271052249":"Leonora|"};
+          const CRUISE_MMSI = new Set(Object.keys(FLEET));
+
+          const LISTEN_MS = 6 * 60 * 1000;   // 6 min = 2 full moored broadcast cycles
+          const PREV_URL  = "https://adamexperiences.github.io/ae-rhine-ais/ships.json";
+          const CARRY_MOORED_MIN = 525600;      // 365 days: never expire. Ships dock for several days at a time.
+          const CARRY_MOVING_MIN = 525600;       // 365 days: always keep the last known position. ageMin tells the page how stale it is.
+          const KNOTS_TO_KMH = 1.852;
+
+          const positions = new Map();
+          const statics   = new Map();
+          let msgCount = 0, reconnects = 0, closedForGood = false, ws = null;
+          const DEADLINE = Date.now() + LISTEN_MS;
+
+          function onMessage(raw) {
+            msgCount++;
+            let m; try { m = JSON.parse(raw); } catch { return; }
+            const meta = m.MetaData || {};
+            const mmsi = meta.MMSI || meta.MMSI_String;
+            if (!mmsi) return;
+            if (m.MessageType === "PositionReport") {
+              const p = m.Message.PositionReport;
+              const sog = typeof p.Sog === "number" ? p.Sog : 0;
+              positions.set(String(mmsi), {
+                lat: p.Latitude, lng: p.Longitude,
+                spd: +(sog * KNOTS_TO_KMH).toFixed(1),
+                hdg: (typeof p.TrueHeading === "number" && p.TrueHeading < 511) ? p.TrueHeading
+                   : (typeof p.Cog === "number" ? Math.round(p.Cog) : 0),
+                status: (sog > 0.5 || p.NavigationalStatus === 0) ? "moving" : "moored",
+                ts: Date.now()
+              });
+            } else if (m.MessageType === "ShipStaticData") {
+              const s = m.Message.ShipStaticData;
+              statics.set(String(mmsi), { name: (s.Name||"").trim() || (meta.ShipName||"").trim(), type: s.Type });
+            }
+          }
+
+          function connect() {
+            ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
+            ws.on("open", () => {
+              ws.send(JSON.stringify({ APIKey: API_KEY, BoundingBoxes: BOXES,
+                FilterMessageTypes: ["PositionReport","ShipStaticData"] }));
+              console.log("connected, listening until deadline");
+            });
+            ws.on("message", onMessage);
+            ws.on("error", (e) => console.error("ws error", e.message));
+            ws.on("close", (code) => {
+              if (closedForGood) return;
+              if (Date.now() < DEADLINE - 5000) {
+                reconnects++;
+                console.log("socket closed code=" + code + ", reconnecting (#" + reconnects + ")");
+                setTimeout(connect, 1000);
+              }
+            });
+          }
+
+          async function loadPrevious() {
+            try {
+              const r = await fetch(PREV_URL + "?cb=" + Date.now(), { signal: AbortSignal.timeout(15000) });
+              if (!r.ok) { console.log("prev feed HTTP " + r.status); return null; }
+              const j = await r.json();
+              console.log("prev feed loaded: " + (j.count||0) + " ships, updated " + j.updated);
+              return j;
+            } catch (e) { console.log("prev feed unavailable: " + e.message); return null; }
+          }
+
+          async function finish() {
+            closedForGood = true;
+            try { ws && ws.close(); } catch {}
+            const now = Date.now();
+            const prev = await loadPrevious();
+
+            const out = [];
+            const fresh = new Set();
+            for (const [mmsi, pos] of positions) {
+              if (!CRUISE_MMSI.has(mmsi)) continue;
+              if (!inBox(pos.lat, pos.lng)) continue;
+              fresh.add(mmsi);
+              const st = statics.get(mmsi) || {};
+              out.push({
+                mmsi,
+                name: FLEET[mmsi] ? FLEET[mmsi].split("|")[0] : (st.name || ("MMSI " + mmsi)),
+                line: (FLEET[mmsi] && FLEET[mmsi].split("|")[1]) || "",
+                river: riverOf(pos.lat, pos.lng),
+                lat: +pos.lat.toFixed(5), lng: +pos.lng.toFixed(5),
+                spd: pos.spd, hdg: pos.hdg, status: pos.status,
+                seen: Math.round((now - pos.ts) / 1000),
+                ageMin: 0
+              });
+            }
+
+            // Carry forward ships seen recently but missed this window, so the map is
+            // not limited to a 6-minute keyhole. Moored ships persist through an
+            // overnight mooring; moving ships expire fast because they travel.
+            let carried = 0;
+            if (prev && Array.isArray(prev.ships)) {
+              const prevTs = Date.parse(prev.updated) || now;
+              const gapMin = Math.max(0, (now - prevTs) / 60000);
+              for (const s of prev.ships) {
+                if (fresh.has(s.mmsi) || !CRUISE_MMSI.has(s.mmsi)) continue;
+                if (!inBox(s.lat, s.lng)) continue;   // drops anything outside both boxes
+                const age = Math.round(gapMin + (s.ageMin || 0));
+                const limit = s.status === "moving" ? CARRY_MOVING_MIN : CARRY_MOORED_MIN;
+                if (age > limit) continue;
+                out.push(Object.assign({}, s, { ageMin: age, river: riverOf(s.lat, s.lng) }));
+                carried++;
+              }
+            }
+
+            out.sort((a, b) => a.name.localeCompare(b.name));
+            const byRiver = { rhine: 0, moselle: 0, danube: 0 };
+            for (const s of out) byRiver[s.river] = (byRiver[s.river] || 0) + 1;
+
+            // Age buckets so the page can decide what to dim.
+            const byAge = { live: 0, under1h: 0, under3h: 0, over3h: 0 };
+            for (const s of out) {
+              if (s.ageMin === 0) byAge.live++;
+              else if (s.ageMin <= 60) byAge.under1h++;
+              else if (s.ageMin <= 180) byAge.under3h++;
+              else byAge.over3h++;
+            }
+
+            const feed = {
+              updated: new Date().toISOString(),
+              rivers: ["rhine","moselle","danube"],
+              count: out.length,
+              live: out.length - carried,
+              carried: carried,
+              byRiver: byRiver,
+              byAge: byAge,
+              maxAgeMin: CARRY_MOORED_MIN,
+              ships: out
+            };
+            fs.writeFileSync(process.env.OUT || "ships.json", JSON.stringify(feed, null, 2));
+
+            const posByRiver = { rhine: 0, moselle: 0, danube: 0 };
+            for (const [, p] of positions) posByRiver[riverOf(p.lat, p.lng)]++;
+            console.log("DIAG messages=" + msgCount + " positions=" + positions.size +
+                        " statics=" + statics.size + " reconnects=" + reconnects);
+            console.log("DIAG allPositionsByRiver=" + JSON.stringify(posByRiver));
+            console.log("DIAG fleetByRiver=" + JSON.stringify(byRiver));
+            console.log("DIAG byAge=" + JSON.stringify(byAge));
+            console.log("DIAG live=" + feed.live + " carried=" + carried + " total=" + out.length);
+            console.log("DIAG fleetSize=" + CRUISE_MMSI.size);
+            process.exit(0);
+          }
+
+          connect();
+          setTimeout(finish, LISTEN_MS);
+
+          HARVESTER_EOF
+          node harvester.js
+          echo 'ships.json head:'
+          head -c 400 _site/ships.json; echo
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: harvest
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
