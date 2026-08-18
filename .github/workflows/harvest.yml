@@ -2,9 +2,9 @@ name: Rhine AIS harvest
 
 on:
   schedule:
-    # every 30 minutes. :05 and :35 rather than :00/:30 because GitHub's
-    # scheduler is busiest on the hour and half hour, which delays runs.
-    - cron: '5,35 * * * *'
+    # Every 15 minutes at :05 :20 :35 :50, off the hour because GitHub's scheduler
+    # is busiest then and silently drops slots. The extra slots are the retry.
+    - cron: '5,20,35,50 * * * *'
   workflow_dispatch:      # run manually from the Actions tab
 
 permissions:
