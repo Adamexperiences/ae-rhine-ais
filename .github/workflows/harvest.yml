@@ -2,8 +2,22 @@ name: Rhine AIS harvest
 
 on:
   schedule:
-    # Every 15 minutes at :05 :20 :35 :50, off the hour because GitHub's scheduler
-    # is busiest then and silently drops slots. The extra slots are the retry.
+    # Four slots an hour at :05 :20 :35 :50, off the hour because GitHub's
+    # scheduler is busiest then and silently drops slots. These are retries,
+    # not four updates. Measured across 89 runs from 13 to 19 Aug 2026, GitHub
+    # actually delivers about 0.6 to 0.7 runs an hour whatever you ask for: the
+    # old two slot cron gave 0.58 an hour, four slots gives 0.67. So expect a
+    # fresh feed roughly every 90 minutes, with the occasional three hour gap.
+    # Ships are carried forward indefinitely and every one reports its own
+    # ageMin, so a dropped slot ages a position rather than losing a ship.
+    #
+    # A twin workflow was tried (harvest-b.yml, 18 Aug 2026) to find out whether
+    # the throttle is per workflow or per repository. It is per workflow, but a
+    # twin does not help: GitHub releases a repository's delayed runs in one
+    # batch, so eleven of its twelve runs landed within fifteen minutes of a
+    # harvest.yml run instead of filling the gaps between them. Worst case
+    # staleness went from 203 to 193 minutes for double the cost, so it was
+    # removed on 19 Aug 2026. Do not add another one.
     - cron: '5,20,35,50 * * * *'
   workflow_dispatch:      # run manually from the Actions tab
 
