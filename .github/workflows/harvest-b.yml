@@ -43,12 +43,14 @@ jobs:
            *    East edge is 11.60 (was 8.80), closing the dead zone that used
            *    to swallow every ship on the Main: Wuerzburg 9.93E, Bamberg
            *    10.89E, Nuremberg 11.08E.
+           *    West edge is 3.20 (was 4.30) so Zeeland 3.57E, Terneuzen 3.83E
+           *    and Ghent 3.72E are inside. They were not monitored at all.
            * 2) Danube. West edge 11.50 (was 12.50) so Kelheim and Regensburg
            *    (12.10E) are inside. Ships docking in Amsterdam alternate
            *    between the two rivers, so both are tracked.
            * --------------------------------------------------------------- */
           const BOXES = [
-            [[47.45,  4.30], [52.40, 11.60]],
+            [[47.45,  3.20], [52.40, 11.60]],
             [[43.00, 11.50], [49.30, 30.00]]
           ];
 
@@ -61,15 +63,60 @@ jobs:
             });
           }
 
+          /* ---------------------------------------------------------------
+           * Which water is she actually on.
+           * "rhine" used to be the fallthrough, which meant Amsterdam,
+           * Rotterdam, Nijmegen and Antwerp all came back labelled Rhine.
+           * Only the Rhine itself carries that name now. Anything inside the
+           * boxes that is not a named waterway returns "other" rather than
+           * being quietly claimed for the Rhine.
+           * Boxes are ordered: the first match wins.
+           * --------------------------------------------------------------- */
+          function box(lat, lng, a, b, c, d) {
+            return lat >= a && lat <= b && lng >= c && lng <= d;
+          }
+
           function riverOf(lat, lng) {
-            // Danube proper is south of 49.3N. The Main-Danube canal north of
-            // that stays "rhine" because those ships are on Rhine itineraries.
+            if (typeof lat !== "number" || typeof lng !== "number") return "other";
+
+            // Danube proper is south of 49.3N.
             if (lng >= 11.50 && lat <= 49.30) return "danube";
+
+            // The Main from the Mainz confluence to Bamberg. West edge is 8.45
+            // so the Rhine at Mainz (8.27E) and Oppenheim (8.35E) is not stolen.
+            if (box(lat, lng, 49.65, 50.25,  8.45, 11.30)) return "main";
+            // Main-Danube canal, Bamberg down to Kelheim.
+            if (box(lat, lng, 48.80, 49.95, 10.95, 11.95)) return "maindanube";
+
             // Moselle: Trier up to just short of the Koblenz confluence.
             // Stops at 7.20E on purpose so the Rhine at Andernach (7.40E) and
-            // Koblenz (7.60E) is not mislabelled. Under-claims a few km rather
-            // than stealing Rhine ships.
-            if (lat >= 49.45 && lat <= 50.40 && lng >= 6.00 && lng <= 7.20) return "moselle";
+            // Koblenz (7.60E) is not mislabelled.
+            if (box(lat, lng, 49.45, 50.40,  6.00,  7.20)) return "moselle";
+            // Neckar, Heidelberg and Heilbronn.
+            if (box(lat, lng, 48.65, 49.60,  8.55,  9.90)) return "neckar";
+
+            // The Rhine keeps its name across the border down to the
+            // Pannerdensche Kop, just west of Lobith (6.10E).
+            if (box(lat, lng, 51.78, 51.92,  6.02,  6.30)) return "rhine";
+
+            // The Dutch delta, branch by branch.
+            if (box(lat, lng, 52.00, 52.70,  5.78,  6.32)) return "ijssel";
+            if (box(lat, lng, 51.94, 52.00,  5.96,  6.20)) return "ijssel";
+            if (box(lat, lng, 52.28, 52.52,  4.50,  5.00)) return "other";   // the IJ and the North Sea Canal
+            if (box(lat, lng, 52.02, 52.42,  4.85,  5.25)) return "ark";     // Amsterdam-Rhine Canal
+            if (box(lat, lng, 51.92, 52.00,  5.30,  5.96)) return "nederrijn";
+            if (box(lat, lng, 51.86, 52.06,  4.55,  5.30)) return "lek";
+            if (box(lat, lng, 51.79, 51.92,  5.15,  6.02)) return "waal";
+            if (box(lat, lng, 51.74, 51.96,  4.60,  5.15)) return "merwede";
+            if (box(lat, lng, 51.78, 52.02,  3.95,  4.60)) return "nieuwemaas";
+            if (box(lat, lng, 50.30, 51.79,  5.35,  6.25)) return "maas";
+            if (box(lat, lng, 50.95, 51.50,  3.30,  4.75)) return "scheldt";
+
+            // Still in the Low Countries, or west of the Rhine altogether.
+            if (lat >= 51.30 && lng <= 6.10) return "other";
+            if (box(lat, lng, 50.55, 51.35,  2.40,  5.60)) return "other";
+            if (lat <= 50.55 && lng < 7.20) return "other";
+
             return "rhine";
           }
 
@@ -183,7 +230,10 @@ jobs:
             }
 
             out.sort((a, b) => a.name.localeCompare(b.name));
-            const byRiver = { rhine: 0, moselle: 0, danube: 0 };
+            const byRiver = { rhine: 0, waal: 0, nederrijn: 0, lek: 0, ijssel: 0, merwede: 0,
+                              nieuwemaas: 0, ark: 0, maas: 0, scheldt: 0,
+                              moselle: 0, main: 0, maindanube: 0, neckar: 0,
+                              danube: 0, other: 0 };
             for (const s of out) byRiver[s.river] = (byRiver[s.river] || 0) + 1;
 
             // Age buckets so the page can decide what to dim.
@@ -197,7 +247,9 @@ jobs:
 
             const feed = {
               updated: new Date().toISOString(),
-              rivers: ["rhine","moselle","danube"],
+              rivers: ["rhine","waal","nederrijn","lek","ijssel","merwede","nieuwemaas",
+                       "ark","maas","scheldt","moselle","main","maindanube","neckar",
+                       "danube","other"],
               count: out.length,
               live: out.length - carried,
               carried: carried,
@@ -208,8 +260,11 @@ jobs:
             };
             fs.writeFileSync(process.env.OUT || "ships.json", JSON.stringify(feed, null, 2));
 
-            const posByRiver = { rhine: 0, moselle: 0, danube: 0 };
-            for (const [, p] of positions) posByRiver[riverOf(p.lat, p.lng)]++;
+            const posByRiver = {};
+            for (const [, p] of positions) {
+              const k = riverOf(p.lat, p.lng);
+              posByRiver[k] = (posByRiver[k] || 0) + 1;
+            }
             console.log("DIAG messages=" + msgCount + " positions=" + positions.size +
                         " statics=" + statics.size + " reconnects=" + reconnects);
             console.log("DIAG allPositionsByRiver=" + JSON.stringify(posByRiver));
