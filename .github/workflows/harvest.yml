@@ -57,14 +57,14 @@ jobs:
            *    East edge is 11.60 (was 8.80), closing the dead zone that used
            *    to swallow every ship on the Main: Wuerzburg 9.93E, Bamberg
            *    10.89E, Nuremberg 11.08E.
-           *    West edge is 3.20 (was 4.30) so Zeeland 3.57E, Terneuzen 3.83E
+           *    West edge is 2.50 (was 3.20) so Zeeland 3.57E, Terneuzen 3.83E
            *    and Ghent 3.72E are inside. They were not monitored at all.
            * 2) Danube. West edge 11.50 (was 12.50) so Kelheim and Regensburg
            *    (12.10E) are inside. Ships docking in Amsterdam alternate
            *    between the two rivers, so both are tracked.
            * --------------------------------------------------------------- */
           const BOXES = [
-            [[47.45,  3.20], [52.40, 11.60]],
+            [[47.45,  2.50], [52.40, 11.60]],
             [[43.00, 11.50], [49.30, 30.00]]
           ];
 
@@ -141,6 +141,7 @@ jobs:
           const PREV_URL  = "https://adamexperiences.github.io/ae-rhine-ais/ships.json";
           const CARRY_MOORED_MIN = 525600;      // 365 days: never expire. Ships dock for several days at a time.
           const CARRY_MOVING_MIN = 525600;       // 365 days: always keep the last known position. ageMin tells the page how stale it is.
+          const STALE_AFTER_MIN  = 43200;  // 30 days: the position is kept but the page paints it grey.
           const KNOTS_TO_KMH = 1.852;
 
           const positions = new Map();
@@ -251,12 +252,14 @@ jobs:
             for (const s of out) byRiver[s.river] = (byRiver[s.river] || 0) + 1;
 
             // Age buckets so the page can decide what to dim.
-            const byAge = { live: 0, under1h: 0, under3h: 0, over3h: 0 };
+            const byAge = { live: 0, under1h: 0, under3h: 0, over3h: 0, stale: 0 };
             for (const s of out) {
               if (s.ageMin === 0) byAge.live++;
               else if (s.ageMin <= 60) byAge.under1h++;
               else if (s.ageMin <= 180) byAge.under3h++;
               else byAge.over3h++;
+              // stale overlaps over3h on purpose: it is a display flag, not a bucket.
+              if (s.ageMin >= STALE_AFTER_MIN) byAge.stale++;
             }
 
             const feed = {
@@ -270,6 +273,7 @@ jobs:
               byRiver: byRiver,
               byAge: byAge,
               maxAgeMin: CARRY_MOORED_MIN,
+              staleAfterMin: STALE_AFTER_MIN,
               ships: out
             };
             fs.writeFileSync(process.env.OUT || "ships.json", JSON.stringify(feed, null, 2));
