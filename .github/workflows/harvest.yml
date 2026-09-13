@@ -230,6 +230,53 @@ jobs:
               });
             }
 
+            // Supplementary source: the public RIS station at Silistra, on the lower
+            // Danube at the Bulgaria/Romania border. aisstream has no receivers below
+            // Bratislava and the openwaters key does not cover the Danube at all, so this
+            // one station is the only live sight of the Ruse to Black Sea run. It covers
+            // roughly 20 km, so expect a cruise ship only when one happens to be passing.
+            // Positions arrive tab separated with lat/lng as integers scaled by 600000.
+            // The X-Requested-With header is required: without it the endpoint answers
+            // 200 with an empty body. Wrapped so a slow or dead station cannot fail a run.
+            try {
+              const risUrl = "http://www.ris-silistra.org/map/shipsonmap"
+                + "?bbox=43.5,22.0,44.8,28.5&mmsi=0&ref=" + Math.random() * 99999;
+              const rr = await fetch(risUrl, {
+                headers: { "X-Requested-With": "XMLHttpRequest" },
+                signal: AbortSignal.timeout(12000)
+              });
+              if (!rr.ok) {
+                console.log("RIS Silistra HTTP " + rr.status);
+              } else {
+                let added = 0;
+                for (const row of (await rr.text()).split("\n")) {
+                  const v = row.split("\t");
+                  if (v.length < 7) continue;
+                  const mmsi = String(v[5] || "").trim();
+                  if (!CRUISE_MMSI.has(mmsi) || fresh.has(mmsi)) continue;
+                  const lat = Number(v[0]) / 600000, lng = Number(v[1]) / 600000;
+                  if (!isFinite(lat) || !isFinite(lng) || !inBox(lat, lng)) continue;
+                  const sog = Number(v[3]) / 10;
+                  fresh.add(mmsi);
+                  out.push({
+                    mmsi,
+                    name: FLEET[mmsi] ? FLEET[mmsi].split("|")[0] : (String(v[6] || "").trim() || ("MMSI " + mmsi)),
+                    line: (FLEET[mmsi] && FLEET[mmsi].split("|")[1]) || "",
+                    river: riverOf(lat, lng),
+                    lat: +lat.toFixed(5), lng: +lng.toFixed(5),
+                    spd: isFinite(sog) ? sog : 0,
+                    hdg: Math.round(Number(v[2]) / 10) || 0,
+                    status: (isFinite(sog) && sog > 0.5) ? "moving" : "moored",
+                    seen: 0,
+                    ageMin: 0,
+                    src: "ris-silistra"
+                  });
+                  added++;
+                }
+                console.log("RIS Silistra: " + added + " fleet ship(s)");
+              }
+            } catch (e) { console.log("RIS Silistra unavailable: " + e.message); }
+
             // Carry forward ships seen recently but missed this window, so the map is
             // not limited to a 6-minute keyhole. Moored ships persist through an
             // overnight mooring; moving ships expire fast because they travel.
