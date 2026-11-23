@@ -1,25 +1,17 @@
 name: Rhine AIS harvest
 
 on:
-  schedule:
-    # Four slots an hour at :05 :20 :35 :50, off the hour because GitHub's
-    # scheduler is busiest then and silently drops slots. These are retries,
-    # not four updates. Measured across 89 runs from 13 to 19 Aug 2026, GitHub
-    # actually delivers about 0.6 to 0.7 runs an hour whatever you ask for: the
-    # old two slot cron gave 0.58 an hour, four slots gives 0.67. So expect a
-    # fresh feed roughly every 90 minutes, with the occasional three hour gap.
-    # Ships are carried forward indefinitely and every one reports its own
-    # ageMin, so a dropped slot ages a position rather than losing a ship.
-    #
-    # A twin workflow was tried (harvest-b.yml, 18 Aug 2026) to find out whether
-    # the throttle is per workflow or per repository. It is per workflow, but a
-    # twin does not help: GitHub releases a repository's delayed runs in one
-    # batch, so eleven of its twelve runs landed within fifteen minutes of a
-    # harvest.yml run instead of filling the gaps between them. Worst case
-    # staleness went from 203 to 193 minutes for double the cost, so it was
-    # removed on 19 Aug 2026. Do not add another one.
-    - cron: '5,20,35,50 * * * *'
-  workflow_dispatch:      # run manually from the Actions tab
+  # Started from outside by a SiteGround cron job (Site Tools > Devs > Cron Jobs
+  # on amsterdamexperiences.nl, schedule '12 */4 * * *') that calls the
+  # workflow_dispatch API every four hours, using a fine-grained token kept in
+  # ae_dispatch_token above public_html. Every call is logged to
+  # ae_dispatch.log in the same folder (HTTP/2 204 = accepted, 401 = bad token).
+  #
+  # GitHub's own schedule trigger was removed on 23 Nov 2026. It is best effort
+  # and by November delivered only about four of its 96 daily slots, five to
+  # seven hours apart. The dispatch call started a run within three seconds
+  # every time it was tested. Do not add a schedule trigger back.
+  workflow_dispatch:
 
 permissions:
   contents: read
